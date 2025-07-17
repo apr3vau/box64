@@ -1,75 +1,14 @@
 Source: box64
 Section: utils
 Priority: optional
-Maintainer: Johannes Schauer Marin Rodrigues <josch@debian.org>
-Build-Depends:
- cmake,
- debhelper-compat (= 13),
- dh-exec,
- ninja-build,
- python3:native,
-Standards-Version: 4.6.2
+Maintainer: Ryan Fortner <ryankfortner@gmail.com>
+Build-Depends: cmake, debhelper-compat (= 13), python3
+Standards-Version: 4.1.4
 Homepage: https://github.com/ptitSeb/box64
-Rules-Requires-Root: no
 
 Package: box64
-Architecture: arm64 ppc64el riscv64
-Depends:
- libgcc-s1:amd64 | libgcc-s1-amd64-cross,
- libstdc++6:amd64 | libstdc++6-amd64-cross,
- ${misc:Depends},
- ${shlibs:Depends},
-Conflicts:
- box64-rk3588,
- box64-rpi4,
-Description: run amd64 binaries on arm64 without emulating library calls
- Using DynaRec on arm64, box64 will dynamically recompile x64_64 code to
- aarch64 but will also translate calls to foreign library functions to
- native library calls. This usually makes amd64 executables run via
- box64 much faster than emulating amd64 on arm64 via qemu which will
- emulate everything down to the C library. For example OpenArena emulated
- with box64 will be at about 85% of its native speed.
- .
- This package contains the generic executable without optimization for a
- specific platform.
-
-Package: box64-rk3588
-Architecture: arm64
-Depends:
- libgcc-s1:amd64 | libgcc-s1-amd64-cross,
- libstdc++6:amd64 | libstdc++6-amd64-cross,
- ${misc:Depends},
- ${shlibs:Depends},
-Conflicts:
- box64,
- box64-rpi4,
-Description: run amd64 binaries on RK3588 without emulating library calls
- Using DynaRec on arm64, box64 will dynamically recompile x64_64 code to
- aarch64 but will also translate calls to foreign library functions to
- native library calls. This usually makes amd64 executables run via
- box64 much faster than emulating amd64 on arm64 via qemu which will
- emulate everything down to the C library. For example OpenArena emulated
- with box64 will be at about 85% of its native speed.
- .
- This package is optimized with -mcpu=cortex-a76.cortex-a55+crypto and
- built with workaround for incoherent si_info on SIGSEGV.
-
-Package: box64-rpi4
-Architecture: arm64
-Depends:
- libgcc-s1:amd64 | libgcc-s1-amd64-cross,
- libstdc++6:amd64 | libstdc++6-amd64-cross,
- ${misc:Depends},
- ${shlibs:Depends},
-Conflicts:
- box64,
- box64-rk3588,
-Description: run amd64 binaries on RPI4 without emulating library calls
- Using DynaRec on arm64, box64 will dynamically recompile x64_64 code to
- aarch64 but will also translate calls to foreign library functions to
- native library calls. This usually makes amd64 executables run via
- box64 much faster than emulating amd64 on arm64 via qemu which will
- emulate everything down to the C library. For example OpenArena emulated
- with box64 will be at about 85% of its native speed.
- .
- This package is optimized with -march=armv8-a+crc -mtune=cortex-a72.
+Architecture: any
+Multi-Arch: foreign
+Depends: ${misc:Depends}, ${shlibs:Depends}
+Description: Linux Userspace x86_64 Emulator with a twist, targeted at ARM Linux devices 
+ Box86 lets you run x86_64 Linux programs (such as games) on non-x86 Linux systems, like ARM (host system needs to be 64bit little-endian).

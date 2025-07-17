@@ -16,13 +16,8 @@
 #include "debug.h"
 #include "emu/x64emu_private.h"
 
-const char* libmName =
-#ifdef ANDROID
-    "libm.so"
-#else
-    "libm.so.6"
-#endif
-    ;
+const char* libmName = "libm.so.6";
+#define ALTNAME "libm.so"
 
 #define LIBNAME libm
 
@@ -135,7 +130,7 @@ F2D(fmod)
 // See https://github.com/bminor/glibc/blob/master/sysdeps/x86_64/fpu/fesetround.c
 EXPORT int my_fesetround(x64emu_t* emu, int round)
 {
-    if (box64_sync_rounding) {
+    if (BOX64ENV(sync_rounding)) {
         if ((round & ~0xc00) != 0)
             // round is not valid.
             return 1;
@@ -155,7 +150,7 @@ EXPORT int my_fesetround(x64emu_t* emu, int round)
 // See https://github.com/bminor/glibc/blob/master/sysdeps/x86_64/fpu/fegetround.c
 EXPORT int my_fegetround(x64emu_t* emu)
 {
-    if (box64_sync_rounding) {
+    if (BOX64ENV(sync_rounding)) {
         return emu->cw.x16 & 0xc00;
     } else {
         return fegetround();
@@ -165,7 +160,7 @@ EXPORT int my_fegetround(x64emu_t* emu)
 #define FROUND(N, T, R)                      \
     EXPORT R my_##N(x64emu_t* emu, T val)    \
     {                                        \
-        if (box64_sync_rounding) {           \
+        if (BOX64ENV(sync_rounding)) {           \
             int round = emu->cw.x16 & 0xc00; \
             fesetround(TO_NATIVE(round));    \
         }                                    \
@@ -185,11 +180,19 @@ FROUND(llrintl, long double, long double)
 #else
 EXPORT double my_llrintl(x64emu_t* emu, double val)
 {
-    if (box64_sync_rounding) {
+    if (BOX64ENV(sync_rounding)) {
         int round = emu->cw.x16 & 0xc00;
         fesetround(TO_NATIVE(round));
     }
     return llrint(val);
+}
+EXPORT double my_nexttoward(x64emu_t* emu, double val, double to)
+{
+    return nexttoward(val, to);
+}
+EXPORT float my_nexttowardf(x64emu_t* emu, float val, double to)
+{
+    return nexttowardf(val, to);
 }
 #endif
 

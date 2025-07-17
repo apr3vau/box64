@@ -7,9 +7,16 @@
 typedef struct box64context_s box64context_t;
 
 void* customMalloc(size_t size);
+void* customMalloc32(size_t size);
 void* customCalloc(size_t n, size_t size);
+void* customCalloc32(size_t n, size_t size);
 void* customRealloc(void* p, size_t size);
+void* customRealloc32(void* p, size_t size);
+void* customMemAligned(size_t align, size_t size);
+void* customMemAligned32(size_t align, size_t size);
 void customFree(void* p);
+void customFree32(void* p);
+size_t customGetUsableSize(void* p);
 
 #define kcalloc     customCalloc
 #define kmalloc     customMalloc
@@ -18,6 +25,10 @@ void customFree(void* p);
 
 #define ALIGN(p) (((p)+box64_pagesize-1)&~(box64_pagesize-1))
 
+#ifndef MAP_32BIT
+#define MAP_32BIT       0x40
+#endif
+
 #ifdef DYNAREC
 typedef struct dynablock_s dynablock_t;
 // custom protection flag to mark Page that are Write protected for Dynarec purpose
@@ -25,9 +36,8 @@ uintptr_t AllocDynarecMap(size_t size);
 void FreeDynarecMap(uintptr_t addr);
 
 void addDBFromAddressRange(uintptr_t addr, size_t size);
-void cleanDBFromAddressRange(uintptr_t addr, size_t size, int destroy);
 // Will return 1 if at least 1 db in the address range
-int isDBFromAddressRange(uintptr_t addr, size_t size);
+int cleanDBFromAddressRange(uintptr_t addr, size_t size, int destroy);
 
 dynablock_t* getDB(uintptr_t idx);
 int getNeedTest(uintptr_t idx);
@@ -89,12 +99,15 @@ void setProtection_elf(uintptr_t addr, size_t size, uint32_t prot);
 void freeProtection(uintptr_t addr, size_t size);
 void refreshProtection(uintptr_t addr);
 uint32_t getProtection(uintptr_t addr);
+uint32_t getProtection_fast(uintptr_t addr);
 int getMmapped(uintptr_t addr);
+int memExist(uintptr_t addr);
 void loadProtectionFromMap(void);
 #ifdef DYNAREC
 void protectDB(uintptr_t addr, size_t size);
 void protectDBJumpTable(uintptr_t addr, size_t size, void* jump, void* ref);
 void unprotectDB(uintptr_t addr, size_t size, int mark);    // if mark==0, the blocks are not marked as potentially dirty
+void neverprotectDB(uintptr_t addr, size_t size, int mark);
 int isprotectedDB(uintptr_t addr, size_t size);
 #endif
 void* find32bitBlock(size_t size);
@@ -102,10 +115,9 @@ void* find31bitBlockNearHint(void* hint, size_t size, uintptr_t mask);
 void* find47bitBlock(size_t size);
 void* find47bitBlockNearHint(void* hint, size_t size, uintptr_t mask); // mask can be 0 for default one (0xffff)
 void* find47bitBlockElf(size_t size, int mainbin, uintptr_t mask);
+void* find31bitBlockElf(size_t size, int mainbin, uintptr_t mask);
 int isBlockFree(void* hint, size_t size);
 
-// unlock mutex that are locked by current thread (for signal handling). Return a mask of unlock mutex
-int unlockCustommemMutex(void);
 // relock the muxtex that were unlocked
 void relockCustommemMutex(int locks);
 
@@ -118,11 +130,16 @@ void addLockAddress(uintptr_t addr);    // add an address to the list of "LOCK"a
 int isLockAddress(uintptr_t addr);  // return 1 is the address is used as a LOCK, 0 else
 
 void SetHotPage(uintptr_t addr);
+void CheckHotPage(uintptr_t addr);
 int isInHotPage(uintptr_t addr);
 int checkInHotPage(uintptr_t addr);
 #endif
 
-void* internal_mmap(void *addr, unsigned long length, int prot, int flags, int fd, ssize_t offset);
-int internal_munmap(void* addr, unsigned long length);
+// this will simulate an x86_64 version of the function (no tracking will done, but tracking will be used)
+void* box_mmap(void* addr, size_t length, int prot, int flags, int fd, ssize_t offset);
+// this will simulate an x86_64 version of the function (no tracking will done)
+int box_munmap(void* addr, size_t length);
+
+void reserveHighMem();
 
 #endif //__CUSTOM_MEM__H_

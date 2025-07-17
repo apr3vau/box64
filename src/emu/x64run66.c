@@ -10,15 +10,15 @@
 
 #include "debug.h"
 #include "box64stack.h"
+#include "box64cpu_util.h"
 #include "x64emu.h"
-#include "x64run.h"
 #include "x64emu_private.h"
 #include "x64run_private.h"
 #include "x64primop.h"
 #include "x64trace.h"
 #include "x87emu_private.h"
 #include "box64context.h"
-#include "bridge.h"
+#include "alternate.h"
 #ifdef DYNAREC
 #include "../dynarec/native_lock.h"
 #endif
@@ -291,7 +291,10 @@ uintptr_t Run66(x64emu_t *emu, rex_t rex, int rep, uintptr_t addr)
             GW->word[0] = imul16(emu, EW->word[0], tmp16u);
         }
         break;
-
+    case 0x6A:                       /* PUSH u8 */
+        tmp16s = F8S;
+        Push16(emu, tmp16s);
+        break;
     case 0x6B:                      /* IMUL Gw,Ew,Ib */
         nextop = F8;
         GETEW(1);
@@ -850,9 +853,6 @@ uintptr_t Run66(x64emu_t *emu, rex_t rex, int rep, uintptr_t addr)
                     break;
                 case 7:                 /* IDIV Ed */
                     idiv64(emu, ED->q[0]);
-                    #ifdef TEST_INTERPRETER
-                    test->notest = 1;
-                    #endif
                     break;
             }
         } else {

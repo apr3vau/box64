@@ -1,7 +1,6 @@
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <dlfcn.h>
 
 #include "debug.h"
 #include "x64trace.h"
@@ -128,7 +127,7 @@ void DeleteX64TraceDecoder(zydis_dec_t **dec)
     #endif
 }
 
-const char* DecodeX64Trace(zydis_dec_t *dec, uintptr_t p)
+const char* DecodeX64Trace(zydis_dec_t* dec, uintptr_t p, int withhex)
 {
     #ifndef HAVE_TRACE
     return "???";
@@ -138,9 +137,11 @@ const char* DecodeX64Trace(zydis_dec_t *dec, uintptr_t p)
         &dec->instruction))) {
         char tmp[511];
         buff[0]='\0';
-        for (int i=0; i<dec->instruction.length; ++i) {
-            sprintf(tmp, "%02X ", *((unsigned char*)p+i));
-            strcat(buff, tmp);
+        if (withhex) {
+            for (int i = 0; i < dec->instruction.length; ++i) {
+                sprintf(tmp, "%02X ", *((unsigned char*)p + i));
+                strcat(buff, tmp);
+            }
         }
         #if 0
         const /*ZydisFormatterToken*/void* token;

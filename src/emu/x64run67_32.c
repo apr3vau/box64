@@ -11,7 +11,6 @@
 #include "debug.h"
 #include "box64stack.h"
 #include "x64emu.h"
-#include "x64run.h"
 #include "x64emu_private.h"
 #include "x64run_private.h"
 #include "x64primop.h"
@@ -65,6 +64,21 @@ uintptr_t Run67_32(x64emu_t *emu, rex_t rex, int rep, uintptr_t addr)
         #else
         return Run6764_32(emu, rex, rep, _GS, addr);
         #endif
+        break;
+    case 0x66:
+        opcode = F8;
+        switch(opcode) {
+
+            case 0x8D:                              /* LEA Gw,M */
+                nextop = F8;
+                GETGW;
+                tmp32u = GETEA32_16(0);
+                GW->word[0] = (uint16_t)tmp32u;
+                break;
+
+            default:
+                return 0;
+        }
         break;
 
     case 0xE0:                      /* LOOPNZ */

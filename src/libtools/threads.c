@@ -7,27 +7,30 @@
 #include <signal.h>
 #include <errno.h>
 #include <setjmp.h>
-#include <sys/mman.h>
-#include <dlfcn.h>
 
+#include "os.h"
 #include "debug.h"
 #include "box64context.h"
 #include "threads.h"
 #include "emu/x64emu_private.h"
-#include "x64run.h"
 #include "x64emu.h"
 #include "box64stack.h"
+#include "box64cpu.h"
+#include "box64cpu.h"
+#include "box64cpu_util.h"
 #include "callback.h"
 #include "custommem.h"
 #include "khash.h"
 #include "emu/x64run_private.h"
 #include "x64trace.h"
-#include "dynarec.h"
 #include "bridge.h"
 #include "myalign.h"
 #ifdef DYNAREC
 #include "dynablock.h"
 #include "dynarec/native_lock.h"
+#endif
+#ifdef BOX32
+#include "box32.h"
 #endif
 
 //void _pthread_cleanup_push_defer(void* buffer, void* routine, void* arg);	// declare hidden functions
@@ -62,9 +65,6 @@ typedef struct x64_unwind_buff_s {
 typedef void(*vFv_t)();
 
 KHASH_MAP_INIT_INT64(threadstack, threadstack_t*)
-#ifndef ANDROID
-KHASH_MAP_INIT_INT64(cancelthread, __pthread_unwind_buf_t*)
-#endif
 
 void CleanStackSize(box64context_t* context)
 {
@@ -78,8 +78,10 @@ void CleanStackSize(box64context_t* context)
 	mutex_unlock(&context->mutex_thread);
 }
 
-void FreeStackSize(kh_threadstack_t* map, uintptr_t attr)
+void FreeStackSize(uintptr_t attr)
 {
+	kh_threadstack_t* map = my_context->stacksizes;
+	if(!map) return;
 	mutex_lock(&my_context->mutex_thread);
 	khint_t k = kh_get(threadstack, map, attr);
 	if(k!=kh_end(map)) {
@@ -89,26 +91,30 @@ void FreeStackSize(kh_threadstack_t* map, uintptr_t attr)
 	mutex_unlock(&my_context->mutex_thread);
 }
 
-void AddStackSize(kh_threadstack_t* map, uintptr_t attr, void* stack, size_t stacksize)
+void AddStackSize(uintptr_t attr, void* stack, size_t stacksize)
 {
+	if(!my_context->stacksizes)
+		my_context->stacksizes = kh_init(threadstack);
+	kh_threadstack_t* map = my_context->stacksizes;
 	khint_t k;
 	int ret;
 	mutex_lock(&my_context->mutex_thread);
 	k = kh_put(threadstack, map, attr, &ret);
-	threadstack_t* ts = kh_value(map, k) = (threadstack_t*)box_calloc(1, sizeof(threadstack_t));
+	if(ret) kh_value(map, k) = (threadstack_t*)box_calloc(1, sizeof(threadstack_t));
+	threadstack_t* ts = kh_value(map, k);
 	ts->stack = stack;
 	ts->stacksize = stacksize;
 	mutex_unlock(&my_context->mutex_thread);
 }
 
 // return stack from attr (or from current emu if attr is not found..., wich is wrong but approximate enough?)
-int GetStackSize(x64emu_t* emu, uintptr_t attr, void** stack, size_t* stacksize)
+int GetStackSize(uintptr_t attr, void** stack, size_t* stacksize)
 {
-	if(emu->context->stacksizes && attr) {
+	if(my_context->stacksizes && attr) {
 		mutex_lock(&my_context->mutex_thread);
-		khint_t k = kh_get(threadstack, emu->context->stacksizes, attr);
-		if(k!=kh_end(emu->context->stacksizes)) {
-			threadstack_t* ts = kh_value(emu->context->stacksizes, k);
+		khint_t k = kh_get(threadstack, my_context->stacksizes, attr);
+		if(k!=kh_end(my_context->stacksizes)) {
+			threadstack_t* ts = kh_value(my_context->stacksizes, k);
 			*stack = ts->stack;
 			*stacksize = ts->stacksize;
 			mutex_unlock(&my_context->mutex_thread);
@@ -116,38 +122,24 @@ int GetStackSize(x64emu_t* emu, uintptr_t attr, void** stack, size_t* stacksize)
 		}
 		mutex_unlock(&my_context->mutex_thread);
 	}
-	// should a Warning be emitted?
-	*stack = emu->init_stack;
-	*stacksize = emu->size_stack;
 	return 0;
 }
 
 void my_longjmp(x64emu_t* emu, /*struct __jmp_buf_tag __env[1]*/void *p, int32_t __val);
 
-typedef struct emuthread_s {
-	uintptr_t 	fnc;
-	void*		arg;
-	x64emu_t*	emu;
-	int			cancel_cap, cancel_size;
-	x64_unwind_buff_t **cancels;
-} emuthread_t;
-
 static pthread_key_t thread_key;
 
-static void emuthread_destroy(void* p)
+void emuthread_destroy(void* p)
 {
 	emuthread_t *et = (emuthread_t*)p;
 	if(!et)
 		return;
-	// check tlsdata
-	/*void* ptr;
-	if (my_context && (ptr = pthread_getspecific(my_context->tlskey)) != NULL)
-        free_tlsdatasize(ptr);*/
-	// free x64emu
-	if(et) {
-		FreeX64Emu(&et->emu);
-		box_free(et);
-	}
+	#ifdef BOX32
+	if(et->is32bits && !et->join && et->fnc)
+		to_hash_d(et->self);
+	#endif
+	FreeX64Emu(&et->emu);
+	box_free(et);
 }
 
 static void emuthread_cancel(void* p)
@@ -158,19 +150,26 @@ static void emuthread_cancel(void* p)
 	// check cancels threads
 	for(int i=et->cancel_size-1; i>=0; --i) {
 		et->emu->flags.quitonlongjmp = 0;
-		my_longjmp(et->emu, et->cancels[i]->__cancel_jmp_buf, 1);
+		my_longjmp(et->emu, ((x64_unwind_buff_t*)et->cancels[i])->__cancel_jmp_buf, 1);
 		DynaRun(et->emu);	// will return after a __pthread_unwind_next()
 	}
+	#ifdef BOX32
+	/*if(box64_is32bits)
+		to_hash_d(et->self);*/ // not removing hash for old pthread_t
+	#endif
 	box_free(et->cancels);
 	et->cancels=NULL;
 	et->cancel_size = et->cancel_cap = 0;
 }
-
+void thread_forget_emu()
+{
+	pthread_setspecific(thread_key, NULL);
+}
 void thread_set_emu(x64emu_t* emu)
 {
 	emuthread_t *et = (emuthread_t*)pthread_getspecific(thread_key);
 	if(!emu) {
-		if(et) box_free(et);
+		if(et) emuthread_destroy(et);
 		pthread_setspecific(thread_key, NULL);
 		return;
 	}
@@ -182,6 +181,13 @@ void thread_set_emu(x64emu_t* emu)
 	}
 	et->emu = emu;
 	et->emu->type = EMUTYPE_MAIN;
+	#ifdef BOX32
+	if(box64_is32bits) {
+		et->is32bits = 1;
+		et->self = (uintptr_t)pthread_self();
+		et->hself = to_hash(et->self);
+	}
+	#endif
 	pthread_setspecific(thread_key, et);
 }
 
@@ -189,18 +195,13 @@ x64emu_t* thread_get_emu()
 {
 	emuthread_t *et = (emuthread_t*)pthread_getspecific(thread_key);
 	if(!et) {
-		int stacksize = 2*1024*1024;
-		// try to get stack size of the thread
-		pthread_attr_t attr;
-		if(!pthread_getattr_np(pthread_self(), &attr)) {
-			size_t stack_size;
-        	void *stack_addr;
-			if(!pthread_attr_getstack(&attr, &stack_addr, &stack_size))
-				if(stack_size)
-					stacksize = stack_size;
-			pthread_attr_destroy(&attr);
-		}
-		void* stack = internal_mmap(NULL, stacksize, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS|MAP_GROWSDOWN, -1, 0);
+		// this should not happens. So if it happens, use a small stack
+		int stacksize = 256*1024;
+		void* stack = NULL;
+		if(box64_is32bits)
+			stack = mmap64(NULL, stacksize, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS|MAP_32BIT, -1, 0);
+		else
+            stack = InternalMmap(NULL, stacksize, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_GROWSDOWN, -1, 0);
 		if(stack!=MAP_FAILED)
 			setProtection((uintptr_t)stack, stacksize, PROT_READ|PROT_WRITE);
 		x64emu_t *emu = NewX64Emu(my_context, 0, (uintptr_t)stack, stacksize, 1);
@@ -209,6 +210,16 @@ x64emu_t* thread_get_emu()
 		return emu;
 	}
 	return et->emu;
+}
+
+emuthread_t* thread_get_et()
+{
+	return (emuthread_t*)pthread_getspecific(thread_key);
+}
+
+void thread_set_et(emuthread_t* et)
+{
+	pthread_setspecific(thread_key, et);
 }
 
 static void* pthread_routine(void* p)
@@ -233,8 +244,7 @@ static void* pthread_routine(void* p)
 	Push64(emu, 0);	// PUSH BP
 	R_RBP = R_RSP;	// MOV BP, SP
 	R_RSP -= 64;	// Guard zone
-	if(R_RSP&0x8)	// align if needed (shouldn't be)
-		R_RSP-=8;
+	R_RSP &= ~15LL;
 	PushExit(emu);
 	R_RIP = et->fnc;
 	R_RDI = (uintptr_t)et->arg;
@@ -259,7 +269,7 @@ static void* pthread_routine(void* p)
 EXPORT int my_pthread_attr_destroy(x64emu_t* emu, void* attr)
 {
 	if(emu->context->stacksizes)
-		FreeStackSize(emu->context->stacksizes, (uintptr_t)attr);
+		FreeStackSize((uintptr_t)attr);
 	PTHREAD_ATTR_ALIGN(attr);
 	int ret = pthread_attr_destroy(PTHREAD_ATTR(attr));
 	// no unaligned, it's destroyed
@@ -269,19 +279,16 @@ EXPORT int my_pthread_attr_destroy(x64emu_t* emu, void* attr)
 EXPORT int my_pthread_attr_getstack(x64emu_t* emu, void* attr, void** stackaddr, size_t* stacksize)
 {
 	PTHREAD_ATTR_ALIGN(attr);
-	int ret = pthread_attr_getstack(PTHREAD_ATTR(attr), stackaddr, stacksize);
-	// no need to unalign, it's const for attr
-	if (ret==0)
-		GetStackSize(emu, (uintptr_t)attr, stackaddr, stacksize);
+	int ret = 0;
+	if(!GetStackSize((uintptr_t)attr, stackaddr, stacksize))
+		ret = pthread_attr_getstack(PTHREAD_ATTR(attr), stackaddr, stacksize);
+//printf_log(LOG_INFO, "pthread_attr_getstack gives (%d) %p 0x%zx\n", ret, *stackaddr, *stacksize);
 	return ret;
 }
 
 EXPORT int my_pthread_attr_setstack(x64emu_t* emu, void* attr, void* stackaddr, size_t stacksize)
 {
-	if(!emu->context->stacksizes) {
-		emu->context->stacksizes = kh_init(threadstack);
-	}
-	AddStackSize(emu->context->stacksizes, (uintptr_t)attr, stackaddr, stacksize);
+	AddStackSize((uintptr_t)attr, stackaddr, stacksize);
 	//Don't call actual setstack...
 	//return pthread_attr_setstack(attr, stackaddr, stacksize);
 	PTHREAD_ATTR_ALIGN(attr);
@@ -341,20 +348,25 @@ EXPORT int my_pthread_attr_getscope(x64emu_t* emu, pthread_attr_t* attr, int* sc
 	PTHREAD_ATTR_ALIGN(attr);
 	return pthread_attr_getscope(PTHREAD_ATTR(attr), scope);
 }
-EXPORT int my_pthread_attr_getstackaddr(x64emu_t* emu, pthread_attr_t* attr, void* addr)
+EXPORT int my_pthread_attr_getstackaddr(x64emu_t* emu, pthread_attr_t* attr, void** addr)
 {
 	(void)emu;
 	size_t size;
 	PTHREAD_ATTR_ALIGN(attr);
-	return pthread_attr_getstack(PTHREAD_ATTR(attr), addr, &size);
-	//return pthread_attr_getstackaddr(getAlignedAttr(attr), addr);
+	int ret = 0;
+	if(!GetStackSize((uintptr_t)attr, addr, &size ))
+		ret = pthread_attr_getstack(PTHREAD_ATTR(attr), addr, &size);
+//printf_log(LOG_INFO, "pthread_attr_getstackaddr gives %p\n", *addr);
+	return ret;
 }
 EXPORT int my_pthread_attr_getstacksize(x64emu_t* emu, pthread_attr_t* attr, size_t* size)
 {
 	(void)emu;
 	void* addr;
 	PTHREAD_ATTR_ALIGN(attr);
-	int ret = pthread_attr_getstack(PTHREAD_ATTR(attr), &addr, size);
+	int ret = 0;
+	if(!GetStackSize((uintptr_t)attr, &addr, size ))
+		ret = pthread_attr_getstack(PTHREAD_ATTR(attr), &addr, size);
 	if(!*size)
 		*size = 2*1024*1024;
 	//return pthread_attr_getstacksize(getAlignedAttr(attr), size);
@@ -376,6 +388,10 @@ EXPORT int my_pthread_attr_setaffinity_np(x64emu_t* emu, pthread_attr_t* attr, s
 	int ret = pthread_attr_setaffinity_np(PTHREAD_ATTR(attr), cpusize, cpuset);
 	PTHREAD_ATTR_UNALIGN(attr);
 	return ret;
+}
+EXPORT int my_pthread_attr_setaffinity_np_old(x64emu_t* emu, pthread_attr_t* attr, void* cpuset)
+{
+	return my_pthread_attr_setaffinity_np(emu, attr, 128, cpuset);
 }
 #endif
 EXPORT int my_pthread_attr_setdetachstate(x64emu_t* emu, pthread_attr_t* attr, int state)
@@ -431,11 +447,10 @@ EXPORT int my_pthread_attr_setscope(x64emu_t* emu, pthread_attr_t* attr, int sco
 EXPORT int my_pthread_attr_setstackaddr(x64emu_t* emu, pthread_attr_t* attr, void* addr)
 {
 	size_t size = 2*1024*1024;
-	my_pthread_attr_getstacksize(emu, attr, &size);
-	PTHREAD_ATTR_ALIGN(attr);
-	int ret = pthread_attr_setstack(PTHREAD_ATTR(attr), addr, size);
-	PTHREAD_ATTR_UNALIGN(attr);
-	return ret;
+	void* pp = NULL;
+	GetStackSize((uintptr_t)attr, &pp, &size);
+	AddStackSize((uintptr_t)attr, addr, size);
+	return 0;
 	//return pthread_attr_setstackaddr(getAlignedAttr(attr), addr);
 }
 #ifndef ANDROID
@@ -451,6 +466,7 @@ EXPORT int my_pthread_getattr_np(x64emu_t* emu, pthread_t thread_id, pthread_att
 		}
 		void* stack = emu->init_stack;
 		size_t sz = emu->size_stack;
+//printf_log(LOG_INFO, "pthread_getattr_np called for self, stack=%p, sz=%lx\n", stack, sz);
 		if (!sz) {
 			// get default stack size
 			pthread_attr_t attr;
@@ -459,7 +475,7 @@ EXPORT int my_pthread_getattr_np(x64emu_t* emu, pthread_t thread_id, pthread_att
 			pthread_attr_destroy(&attr);
 			// should stack be adjusted?
 		}
-		AddStackSize(emu->context->stacksizes, (uintptr_t)attr, stack, sz);
+		AddStackSize((uintptr_t)attr, stack, sz);
 	}
 	return ret;
 }
@@ -496,14 +512,14 @@ EXPORT int my_pthread_create(x64emu_t *emu, void* t, void* attr, void* start_rou
 		if(pthread_attr_getstacksize(PTHREAD_ATTR(attr), &stsize)==0)
 			stacksize = stsize;
 	}
-	if(GetStackSize(emu, (uintptr_t)attr, &attr_stack, &attr_stacksize))
+	if(GetStackSize((uintptr_t)attr, &attr_stack, &attr_stacksize))
 	{
 		stack = attr_stack;
 		stacksize = attr_stacksize;
 		own = 0;
 	} else {
-		stack = internal_mmap(NULL, stacksize, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS|MAP_GROWSDOWN, -1, 0);
-		if(stack!=MAP_FAILED)
+        stack = InternalMmap(NULL, stacksize, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_GROWSDOWN, -1, 0);
+        if(stack!=MAP_FAILED)
 	        setProtection((uintptr_t)stack, stacksize, PROT_READ|PROT_WRITE);
 		own = 1;
 	}
@@ -516,7 +532,7 @@ EXPORT int my_pthread_create(x64emu_t *emu, void* t, void* attr, void* start_rou
 	et->fnc = (uintptr_t)start_routine;
 	et->arg = arg;
 	#ifdef DYNAREC
-	if(box64_dynarec) {
+	if(BOX64ENV(dynarec)) {
 		// pre-creation of the JIT code for the entry point of the thread
 		DBGetBlock(emu, (uintptr_t)start_routine, 1, 0);	// function wrapping are 64bits only on box64
 	}
@@ -531,8 +547,8 @@ EXPORT int my_pthread_create(x64emu_t *emu, void* t, void* attr, void* start_rou
 void* my_prepare_thread(x64emu_t *emu, void* f, void* arg, int ssize, void** pet)
 {
 	int stacksize = (ssize)?ssize:(2*1024*1024);	//default stack size is 2Mo
-	void* stack = internal_mmap(NULL, stacksize, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS|MAP_GROWSDOWN, -1, 0);
-	if(stack!=MAP_FAILED)
+    void* stack = InternalMmap(NULL, stacksize, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_GROWSDOWN, -1, 0);
+    if(stack!=MAP_FAILED)
 		setProtection((uintptr_t)stack, stacksize, PROT_READ|PROT_WRITE);
 	emuthread_t *et = (emuthread_t*)box_calloc(1, sizeof(emuthread_t));
 	x64emu_t *emuthread = NewX64Emu(emu->context, (uintptr_t)f, (uintptr_t)stack, stacksize, 1);
@@ -542,7 +558,7 @@ void* my_prepare_thread(x64emu_t *emu, void* f, void* arg, int ssize, void** pet
 	et->fnc = (uintptr_t)f;
 	et->arg = arg;
 	#ifdef DYNAREC
-	if(box64_dynarec) {
+	if(BOX64ENV(dynarec)) {
 		// pre-creation of the JIT code for the entry point of the thread
 		DBGetBlock(emu, (uintptr_t)f, 1, 0);	// function wrapping are 64bits only on box64
 	}
@@ -637,10 +653,10 @@ static void* findcleanup_routineFct(void* fct)
 
 // key_dtor
 #define GO(A)   \
-static uintptr_t my_key_dtor_fct_##A = 0;  \
-static void my_key_dtor_##A(void* a)    			\
+static uintptr_t my_key_dtor_fct_##A = 0;  		\
+static void my_key_dtor_##A(void* a)    		\
 {                                       		\
-    RunFunction(my_key_dtor_fct_##A, 1, a);\
+    RunFunction(my_key_dtor_fct_##A, 1, a);		\
 }
 SUPER()
 #undef GO
@@ -778,6 +794,11 @@ EXPORT int my_pthread_getaffinity_np(x64emu_t* emu, pthread_t thread, size_t cpu
 
     return ret;
 }
+EXPORT int my_pthread_getaffinity_np_old(x64emu_t* emu, pthread_t thread, void* cpuset)
+{
+	return my_pthread_getaffinity_np(emu, thread, 128, cpuset);
+}
+
 
 EXPORT int my_pthread_setaffinity_np(x64emu_t* emu, pthread_t thread, size_t cpusetsize, void* cpuset)
 {
@@ -788,6 +809,10 @@ EXPORT int my_pthread_setaffinity_np(x64emu_t* emu, pthread_t thread, size_t cpu
 	}
 
     return ret;
+}
+EXPORT int my_pthread_setaffinity_np_old(x64emu_t* emu, pthread_t thread, void* cpuset)
+{
+	return my_pthread_setaffinity_np(emu, thread, 128, cpuset);
 }
 #endif
 
@@ -1045,6 +1070,68 @@ EXPORT int my_pthread_cond_broadcast(x64emu_t* emu, pthread_cond_t *pc)
 }
 #endif
 
+typedef struct pthread_cond_old_s {
+	pthread_cond_t* cond;
+} pthread_cond_old_t;
+
+static pthread_cond_t* get_cond(pthread_cond_old_t* cond) {
+	if(!cond->cond) {
+		pthread_cond_t* newcond = box_calloc(1, sizeof(pthread_cond_t));
+		#ifdef DYNAREC
+		if(native_lock_storeifnull(&cond->cond, newcond))
+			box_free(newcond);
+		#else
+		static pthread_mutex_t mutex_cond = PTHREAD_MUTEX_INITIALIZER;
+		pthread_mutex_lock(&mutex_cond);
+		if(!cond->cond)
+			cond->cond = newcond;
+		else
+			box_free(newcond);
+		#endif
+	}
+	return cond->cond;
+}
+
+EXPORT int my_pthread_cond_broadcast_old(x64emu_t* emu, pthread_cond_old_t* cond)
+{
+    (void)emu;
+	pthread_cond_t * c = get_cond(cond);
+	return pthread_cond_broadcast(c);
+}
+EXPORT int my_pthread_cond_destroy_old(x64emu_t* emu, pthread_cond_old_t* cond)
+{
+    (void)emu;
+	pthread_cond_t * c = get_cond(cond);
+	int ret = pthread_cond_destroy(c);
+	box_free(cond->cond);
+	return ret;
+}
+EXPORT int my_pthread_cond_init_old(x64emu_t* emu, pthread_cond_old_t* cond, void* attr)
+{
+    (void)emu;
+	pthread_cond_t *c = get_cond(cond);
+	return pthread_cond_init(c, (const pthread_condattr_t*)attr);
+}
+EXPORT int my_pthread_cond_signal_old(x64emu_t* emu, pthread_cond_old_t* cond)
+{
+    (void)emu;
+	pthread_cond_t * c = get_cond(cond);
+	return pthread_cond_signal(c);
+}
+EXPORT int my_pthread_cond_timedwait_old(x64emu_t* emu, pthread_cond_old_t* cond, void* mutex, void* abstime)
+{
+    (void)emu;
+	pthread_cond_t * c = get_cond(cond);
+	return pthread_cond_timedwait(c, mutex, (const struct timespec*)abstime);
+	#undef T
+}
+EXPORT int my_pthread_cond_wait_old(x64emu_t* emu, pthread_cond_old_t* cond, void* mutex)
+{
+    (void)emu;
+	pthread_cond_t * c = get_cond(cond);
+	return pthread_cond_wait(c, mutex);
+}
+
 typedef union my_barrierattr_s {
 	int						x86;
 	pthread_barrierattr_t 	nat;
@@ -1097,6 +1184,10 @@ EXPORT int my_pthread_barrier_init(x64emu_t* emu, pthread_barrier_t* bar, my_bar
 
 void init_pthread_helper()
 {
+	#ifdef BOX32
+	if(box64_is32bits)
+		init_pthread_helper_32();
+	#endif
 	real_pthread_cleanup_push_defer = (vFppp_t)dlsym(NULL, "_pthread_cleanup_push_defer");
 	real_pthread_cleanup_pop_restore = (vFpi_t)dlsym(NULL, "_pthread_cleanup_pop_restore");
 	real_pthread_cond_clockwait = (iFppip_t)dlsym(NULL, "pthread_cond_clockwait");
@@ -1109,6 +1200,8 @@ void init_pthread_helper()
 			real_phtread_kill_old = (iFli_t)dlvsym(NULL, "pthread_kill", buff);
 		}
 	}
+	if(!real_phtread_kill_old)
+		real_phtread_kill_old = (iFli_t)dlvsym(NULL, "pthread_kill", "GLIBC_2.2.5");
 	if(!real_phtread_kill_old) {
 		printf_log(LOG_INFO, "Warning, older then 2.34 pthread_kill not found, using current one\n");
 		real_phtread_kill_old = (iFli_t)pthread_kill;
@@ -1129,6 +1222,10 @@ void clean_current_emuthread()
 
 void fini_pthread_helper(box64context_t* context)
 {
+	#ifdef BOX32
+	if(box64_is32bits)
+		fini_pthread_helper_32(context);
+	#endif
 	CleanStackSize(context);
 	clean_current_emuthread();
 }

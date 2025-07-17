@@ -10,15 +10,16 @@
 
 #include "debug.h"
 #include "box64stack.h"
+#include "box64cpu_util.h"
 #include "x64emu.h"
-#include "x64run.h"
 #include "x64emu_private.h"
 #include "x64run_private.h"
 #include "x64primop.h"
 #include "x64trace.h"
 #include "x87emu_private.h"
 #include "box64context.h"
-#include "bridge.h"
+#include "alternate.h"
+#include "emit_signals.h"
 
 #include "modrm.h"
 
@@ -42,6 +43,7 @@ uintptr_t Run64(x64emu_t *emu, rex_t rex, int seg, uintptr_t addr)
     #ifdef TEST_INTERPRETER
     x64emu_t* emu = test->emu;
     #endif
+    int is_nan;
     uintptr_t tlsdata = GetSegmentBaseEmu(emu, seg);
 
     opcode = F8;
@@ -177,6 +179,13 @@ uintptr_t Run64(x64emu_t *emu, rex_t rex, int seg, uintptr_t addr)
                             return 0;
                     }
                     break;
+
+                case 0x18:
+                case 0x19:
+                case 0x1F: /* NOP (multi-byte) */
+                    nextop = F8;
+                    FAKEED(0);
+                    break;
                 case 0x28:
                     switch(rep) {
                         case 0: /* MOVAPS Gx, FS:Ex */
@@ -209,7 +218,10 @@ uintptr_t Run64(x64emu_t *emu, rex_t rex, int seg, uintptr_t addr)
                             nextop = F8;
                             GETEX_OFFS(0, tlsdata);
                             GETGX;
+                            is_nan = isnanf(GX->f[0]) || isnanf(EX->f[0]);
+                            NAN_PROPAGATION(GX->f[0], EX->f[0], break);
                             GX->f[0] += EX->f[0];
+                            if(!is_nan && isnanf(GX->f[0])) GX->f[0] = -NAN;
                             break;
 
                         default:
@@ -222,6 +234,7 @@ uintptr_t Run64(x64emu_t *emu, rex_t rex, int seg, uintptr_t addr)
                             nextop = F8;
                             GETEX_OFFS(0, tlsdata);
                             GETGX;
+                            NAN_PROPAGATION(GX->f[0], EX->f[0], break);
                             GX->f[0] *= EX->f[0];
                             break;
 
@@ -318,6 +331,12 @@ uintptr_t Run64(x64emu_t *emu, rex_t rex, int seg, uintptr_t addr)
                                 else
                                     CLEAR_FLAG(F_CF);
                             }
+                            if (BOX64ENV(dynarec_test)) {
+                                CLEAR_FLAG(F_OF);
+                                CLEAR_FLAG(F_SF);
+                                CLEAR_FLAG(F_AF);
+                                CLEAR_FLAG(F_PF);
+                            }
                             break;
                         case 5:             /* BTS Ed, Ib */
                             CHECK_FLAGS(emu);
@@ -342,6 +361,12 @@ uintptr_t Run64(x64emu_t *emu, rex_t rex, int seg, uintptr_t addr)
                                 if(MODREG)
                                     ED->dword[1] = 0;
                             }
+                            if (BOX64ENV(dynarec_test)) {
+                                CLEAR_FLAG(F_OF);
+                                CLEAR_FLAG(F_SF);
+                                CLEAR_FLAG(F_AF);
+                                CLEAR_FLAG(F_PF);
+                            }
                             break;
                         case 6:             /* BTR Ed, Ib */
                             CHECK_FLAGS(emu);
@@ -364,6 +389,12 @@ uintptr_t Run64(x64emu_t *emu, rex_t rex, int seg, uintptr_t addr)
                                 if(MODREG)
                                     ED->dword[1] = 0;
                             }
+                            if (BOX64ENV(dynarec_test)) {
+                                CLEAR_FLAG(F_OF);
+                                CLEAR_FLAG(F_SF);
+                                CLEAR_FLAG(F_AF);
+                                CLEAR_FLAG(F_PF);
+                            }
                             break;
                         case 7:             /* BTC Ed, Ib */
                             CHECK_FLAGS(emu);
@@ -385,6 +416,12 @@ uintptr_t Run64(x64emu_t *emu, rex_t rex, int seg, uintptr_t addr)
                                 ED->dword[0] ^= (1<<tmp8u);
                                 if(MODREG)
                                     ED->dword[1] = 0;
+                            }
+                            if (BOX64ENV(dynarec_test)) {
+                                CLEAR_FLAG(F_OF);
+                                CLEAR_FLAG(F_SF);
+                                CLEAR_FLAG(F_AF);
+                                CLEAR_FLAG(F_PF);
                             }
                             break;
 
@@ -463,7 +500,24 @@ uintptr_t Run64(x64emu_t *emu, rex_t rex, int seg, uintptr_t addr)
             if(rex.is32bits)
                 return Run6764_32(emu, rex, seg, seg, addr);
             else
-                return 0;
+                return Run6764(emu, rex, seg, seg, addr);
+
+        case 0x69:                      /* IMUL Gd,Ed,Id */
+            nextop = F8;
+            GETED_OFFS(4, tlsdata);
+            GETGD;
+            tmp64u = F32S64;
+            if(rex.w)
+                GD->q[0] = imul64(emu, ED->q[0], tmp64u);
+            else
+                GD->q[0] = imul32(emu, ED->dword[0], tmp64u);
+            break;
+
+        case 0x6C:                      /* INSB DX */
+        case 0x6D:                      /* INSD DX */
+        case 0x6E:                      /* OUTSB DX */
+        case 0x6F:                      /* OUTSD DX */
+            return addr-1;  // skip 64/65 prefix and resume normal execution
 
         case 0x80:                      /* GRP Eb,Ib */
             nextop = F8;
@@ -528,6 +582,15 @@ uintptr_t Run64(x64emu_t *emu, rex_t rex, int seg, uintptr_t addr)
             }
             break;
 
+        case 0x85:                      /* TEST Ed,Gd */
+            nextop = F8;
+            GETED_OFFS(0, tlsdata);
+            GETGD;
+            if(rex.w)
+                test64(emu, ED->q[0], GD->q[0]);
+            else
+                test32(emu, ED->dword[0], GD->dword[0]);
+            break;
         case 0x86:                      /* XCHG Eb,Gb */
             nextop = F8;
 #if defined(DYNAREC) && !defined(TEST_INTERPRETER)
@@ -627,6 +690,9 @@ uintptr_t Run64(x64emu_t *emu, rex_t rex, int seg, uintptr_t addr)
         case 0x90:                      /* NOP */
             break;
 
+        case 0x9D:                      /* POPF */
+            return addr-1;  // skip 64/65 prefix and resume normal execution
+
         case 0xA1:                      /* MOV EAX,FS:Od */
             if(rex.is32bits) {
                 tmp32s = F32S;
@@ -639,7 +705,15 @@ uintptr_t Run64(x64emu_t *emu, rex_t rex, int seg, uintptr_t addr)
                     R_RAX = *(uint32_t*)(tlsdata+tmp64u);
             }
             break;
-
+        case 0xA2:                      /* MOV Ob,AL */
+            if(rex.is32bits) {
+                tmp32s = F32S;
+                *(uint8_t*)(uintptr_t)(tlsdata+tmp32s) = R_AL;
+            } else {
+                tmp64u = F64;
+                *(uint8_t*)(tlsdata+tmp64u) = R_AL;
+            }
+            break;
         case 0xA3:                      /* MOV FS:Od,EAX */
             if(rex.is32bits) {
                 tmp32s = F32S;
@@ -712,11 +786,58 @@ uintptr_t Run64(x64emu_t *emu, rex_t rex, int seg, uintptr_t addr)
             }
             break;
 
-        case 0xEB:                      /* JMP Ib */
-            tmp32s = F8S; // jump is relative
-            addr += tmp32s;
+        case 0xD8:                      /* x87 opcodes */
+            #ifdef TEST_INTERPRETER
+            return TestD8(test, rex, addr, tlsdata);
+            #else
+            return RunD8(emu, rex, addr, tlsdata);
+            #endif
+            break;
+        case 0xD9:                      /* x87 opcodes */
+            #ifdef TEST_INTERPRETER
+            return TestD9(test, rex, addr, tlsdata);
+            #else
+            return RunD9(emu, rex, addr, tlsdata);
+            #endif
             break;
 
+        case 0xEB:                      /* JMP Ib */
+            return addr-1;  // skip 64/65 prefix and resume normal execution
+
+        case 0xF6:                      /* GRP3 Eb(,Ib) */
+            nextop = F8;
+            tmp8u = (nextop>>3)&7;
+            GETEB_OFFS((tmp8u<2)?1:0, tlsdata);
+            switch(tmp8u) {
+                case 0: 
+                case 1:                 /* TEST Eb,Ib */
+                    tmp8u = F8;
+                    test8(emu, EB->byte[0], tmp8u);
+                    break;
+                case 2:                 /* NOT Eb */
+                    EB->byte[0] = not8(emu, EB->byte[0]);
+                    break;
+                case 3:                 /* NEG Eb */
+                    EB->byte[0] = neg8(emu, EB->byte[0]);
+                    break;
+                case 4:                 /* MUL AL,Eb */
+                    mul8(emu, EB->byte[0]);
+                    break;
+                case 5:                 /* IMUL AL,Eb */
+                    imul8(emu, EB->byte[0]);
+                    break;
+                case 6:                 /* DIV Eb */
+                    if(!EB->byte[0])
+                        EmitDiv0(emu, (void*)R_RIP, 1);
+                    div8(emu, EB->byte[0]);
+                    break;
+                case 7:                 /* IDIV Eb */
+                    if(!EB->byte[0])
+                        EmitDiv0(emu, (void*)R_RIP, 1);
+                    idiv8(emu, EB->byte[0]);
+                    break;
+            }
+            break;
         case 0xF7:                      /* GRP3 Ed(,Id) */
             nextop = F8;
             tmp8u = (nextop>>3)&7;
@@ -745,9 +866,6 @@ uintptr_t Run64(x64emu_t *emu, rex_t rex, int seg, uintptr_t addr)
                         break;
                     case 7:                 /* IDIV Ed */
                         idiv64(emu, ED->q[0]);
-                        #ifdef TEST_INTERPRETER
-                        test->notest = 1;
-                        #endif
                         break;
                 }
             } else {
