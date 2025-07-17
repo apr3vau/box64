@@ -5,10 +5,9 @@
 
 #include "debug.h"
 #include "box64context.h"
-#include "dynarec.h"
+#include "box64cpu.h"
 #include "emu/x64emu_private.h"
 #include "emu/x64run_private.h"
-#include "x64run.h"
 #include "x64emu.h"
 #include "box64stack.h"
 #include "callback.h"
@@ -18,7 +17,7 @@
 
 #include "arm64_printer.h"
 #include "dynarec_arm64_private.h"
-#include "dynarec_arm64_helper.h"
+#include "../dynarec_helper.h"
 #include "dynarec_arm64_functions.h"
 
 
@@ -30,7 +29,7 @@ uintptr_t dynarec64_66F0(dynarec_arm_t* dyn, uintptr_t addr, uintptr_t ip, int n
     uint8_t nextop;
     uint8_t gd, ed, u8;
     uint8_t wback, wb1, wb2, gb1, gb2;
-    int32_t i32;
+    int16_t i16;
     int64_t i64, j64;
     int64_t fixedaddress;
     int unscaled;
@@ -55,7 +54,7 @@ uintptr_t dynarec64_66F0(dynarec_arm_t* dyn, uintptr_t addr, uintptr_t ip, int n
             nextop = F8;
             GETGW(x5);
             if(MODREG) {
-                ed = xRAX+(nextop&7)+(rex.b<<3);
+                ed = TO_NAT((nextop & 7) + (rex.b << 3));
                 UXTHw(x6, ed);
                 emit_add16(dyn, ninst, x6, x5, x3, x4);
                 BFIx(ed, x6, 0, 16);
@@ -85,7 +84,7 @@ uintptr_t dynarec64_66F0(dynarec_arm_t* dyn, uintptr_t addr, uintptr_t ip, int n
             nextop = F8;
             GETGW(x5);
             if(MODREG) {
-                ed = xRAX+(nextop&7)+(rex.b<<3);
+                ed = TO_NAT((nextop & 7) + (rex.b << 3));
                 UXTHw(x6, ed);
                 emit_or16(dyn, ninst, x6, x5, x3, x4);
                 BFIx(ed, x6, 0, 16);
@@ -120,7 +119,7 @@ uintptr_t dynarec64_66F0(dynarec_arm_t* dyn, uintptr_t addr, uintptr_t ip, int n
                     GETGD;
                     UXTHw(x6, xRAX);
                     if(MODREG) {
-                        ed = xRAX+(nextop&7)+(rex.b<<3);
+                        ed = TO_NAT((nextop & 7) + (rex.b << 3));
                         wback = 0;
                         UXTHw(x1, ed);
                         CMPSxw_REG(x6, x1);
@@ -158,6 +157,8 @@ uintptr_t dynarec64_66F0(dynarec_arm_t* dyn, uintptr_t addr, uintptr_t ip, int n
                             MARK3;
                             LDRH_U12(x1, wback, 0);
                             LDAXRB(x3, wback); // dummy read, to arm the write...
+                            SUBw_UXTB(x3, x3, x1);
+                            CBNZw_MARK3(x3);
                             CMPSw_REG(x6, x1);
                             B_MARK(cNE);
                             // EAX == Ed
@@ -166,8 +167,8 @@ uintptr_t dynarec64_66F0(dynarec_arm_t* dyn, uintptr_t addr, uintptr_t ip, int n
                             STRH_U12(gd, wback, 0);
                         }
                     }
-                    SMDMB();
                     MARK;
+                    SMDMB();
                     // Common part (and fallback for EAX != Ed)
                     UFLAG_IF {emit_cmp16(dyn, ninst, x6, x1, x3, x4, x5);}
                     BFIx(xRAX, x1, 0, 16);
@@ -177,10 +178,10 @@ uintptr_t dynarec64_66F0(dynarec_arm_t* dyn, uintptr_t addr, uintptr_t ip, int n
                     INST_NAME("LOCK XADD Gw, Ew");
                     SETFLAGS(X_ALL, SF_SET_PENDING);
                     nextop = F8;
-                    gd = xRAX+((nextop&0x38)>>3)+(rex.r<<3);
+                    gd = TO_NAT(((nextop & 0x38) >> 3) + (rex.r << 3));
                     UXTHx(x5, gd);
                     if(MODREG) {
-                        ed = xRAX+(nextop&7)+(rex.b<<3);
+                        ed = TO_NAT((nextop & 7) + (rex.b << 3));
                         BFIx(gd, ed, 0, 16);
                         emit_add16(dyn, ninst, x5, gd, x3, x4);
                         BFIx(ed, x5, 0, 16);
@@ -216,7 +217,7 @@ uintptr_t dynarec64_66F0(dynarec_arm_t* dyn, uintptr_t addr, uintptr_t ip, int n
             nextop = F8;
             GETGW(x5);
             if(MODREG) {
-                ed = xRAX+(nextop&7)+(rex.b<<3);
+                ed = TO_NAT((nextop & 7) + (rex.b << 3));
                 UXTHw(x6, ed);
                 emit_adc16(dyn, ninst, x6, x5, x3, x4);
                 BFIx(ed, x6, 0, 16);
@@ -237,7 +238,7 @@ uintptr_t dynarec64_66F0(dynarec_arm_t* dyn, uintptr_t addr, uintptr_t ip, int n
             nextop = F8;
             GETGW(x5);
             if(MODREG) {
-                ed = xRAX+(nextop&7)+(rex.b<<3);
+                ed = TO_NAT((nextop & 7) + (rex.b << 3));
                 UXTHw(x6, ed);
                 emit_and16(dyn, ninst, x6, gd, x3, x4);
                 BFIx(ed, x6, 0, 16);
@@ -274,16 +275,16 @@ uintptr_t dynarec64_66F0(dynarec_arm_t* dyn, uintptr_t addr, uintptr_t ip, int n
                     }
                     SETFLAGS(X_ALL, SF_SET_PENDING);
                     if(MODREG) {
-                        if(opcode==0x81) i32 = F16S; else i32 = F8S;
-                        ed = xRAX+(nextop&7)+(rex.b<<3);
-                        MOV32w(x5, i32);
+                        if(opcode==0x81) i16 = F16S; else i16 = F8S;
+                        ed = TO_NAT((nextop & 7) + (rex.b << 3));
+                        MOV32w(x5, i16);
                         UXTHw(x6, ed);
                         emit_add16(dyn, ninst, x6, x5, x3, x4);
                         BFIx(ed, x6, 0, 16);
                     } else {
                         addr = geted(dyn, addr, ninst, nextop, &wback, x2, &fixedaddress, NULL, 0, 0, rex, LOCK_LOCK, 0, (opcode==0x81)?2:1);
-                        if(opcode==0x81) i32 = F16S; else i32 = F8S;
-                        MOV32w(x5, i32);
+                        if(opcode==0x81) i16 = F16S; else i16 = F8S;
+                        MOV32w(x5, i16);
                         if(!ALIGNED_ATOMICH) {
                             if(arm64_uscat) {
                                 ANDx_mask(x1, wback, 1, 0, 3);  // mask = F
@@ -295,29 +296,35 @@ uintptr_t dynarec64_66F0(dynarec_arm_t* dyn, uintptr_t addr, uintptr_t ip, int n
                             }
                         }
                         if(arm64_atomics) {
-                            LDADDALH(x5, x1, wback);
                             UFLAG_IF {
-                                emit_add16(dyn, ninst, x1, x5, x3, x4);    
+                                LDADDALH(x5, x1, wback);
+                            } else {
+                                STADDLH(x5, wback);
                             }
                         } else {
                             MARKLOCK;
                             LDAXRH(x1, wback);
-                            emit_add16(dyn, ninst, x1, x5, x3, x4);
-                            STLXRH(x3, x1, wback);
+                            ADDw_REG(x4, x1, x5);
+                            STLXRH(x3, x4, wback);
                             CBNZx_MARKLOCK(x3);
                         }
                         SMDMB();
                         if(!ALIGNED_ATOMICH) {
-                            B_NEXT_nocond;
+                            B_MARK2_nocond;
                             MARK;   // unaligned! also, not enough
                             LDRH_U12(x1, wback, 0);
                             LDAXRB(x4, wback);
-                            BFIw(x1, x4, 0, 8); // re-inject
-                            emit_add16(dyn, ninst, x1, x5, x3, x4);
-                            STLXRB(x3, x1, wback);
+                            SUBw_UXTB(x4, x4, x1);
+                            CBNZw_MARK(x4);
+                            ADDw_REG(x4, x1, x5);
+                            STLXRB(x3, x4, wback);
                             CBNZx_MARK(x3);
-                            STRH_U12(x1, wback, 0);    // put the whole value
+                            STRH_U12(x4, wback, 0);    // put the whole value
                             SMDMB();
+                        }
+                        MARK2;
+                        UFLAG_IF {
+                            emit_add16(dyn, ninst, x1, x5, x3, x4);
                         }
                     }
                     break;
@@ -325,27 +332,32 @@ uintptr_t dynarec64_66F0(dynarec_arm_t* dyn, uintptr_t addr, uintptr_t ip, int n
                     if(opcode==0x81) {INST_NAME("LOCK OR Ew, Iw");} else {INST_NAME("LOCK OR Ew, Ib");}
                     SETFLAGS(X_ALL, SF_SET_PENDING);
                     if(MODREG) {
-                        if(opcode==0x81) i32 = F16S; else i32 = F8S;
-                        ed = xRAX+(nextop&7)+(rex.b<<3);
-                        MOV32w(x5, i32);
+                        if(opcode==0x81) i16 = F16S; else i16 = F8S;
+                        ed = TO_NAT((nextop & 7) + (rex.b << 3));
                         UXTHw(x6, ed);
-                        emit_or16(dyn, ninst, x6, x5, x3, x4);
+                        emit_or16c(dyn, ninst, x6, i16, x3, x4);
                         BFIx(ed, x6, 0, 16);
                     } else {
                         addr = geted(dyn, addr, ninst, nextop, &wback, x2, &fixedaddress, NULL, 0, 0, rex, LOCK_LOCK, 0, (opcode==0x81)?2:1);
-                        if(opcode==0x81) i32 = F16S; else i32 = F8S;
-                        MOV32w(x5, i32);
+                        if(opcode==0x81) i16 = F16S; else i16 = F8S;
+                        if(!i64) {MOV32w(x5, i16);}
                         if(arm64_atomics) {
                             UFLAG_IF {
                                 LDSETALH(x5, x1, wback);
-                                emit_or16(dyn, ninst, x1, x5, x3, x4);
+                                emit_or16c(dyn, ninst, x1, i16, x3, x4);
                             } else {
                                 STSETLH(x5, wback);
                             }
                         } else {
+                            i64 = convert_bitmask_w(i16);
+                            if(!i64) {MOV32w(x5, i16);}
                             MARKLOCK;
                             LDAXRH(x1, wback);
-                            emit_or16(dyn, ninst, x1, x5, x3, x4);
+                            if(i64) {
+                                emit_or16c(dyn, ninst, x1, i16, x3, x4);
+                            } else {
+                                emit_or16(dyn, ninst, x1, x5, x3, x4);
+                            }
                             STLXRH(x3, x1, wback);
                             CBNZx_MARKLOCK(x3);
                         }
@@ -357,16 +369,16 @@ uintptr_t dynarec64_66F0(dynarec_arm_t* dyn, uintptr_t addr, uintptr_t ip, int n
                     READFLAGS(X_CF);
                     SETFLAGS(X_ALL, SF_SET_PENDING);
                     if(MODREG) {
-                        if(opcode==0x81) i32 = F16S; else i32 = F8S;
-                        ed = xRAX+(nextop&7)+(rex.b<<3);
-                        MOV32w(x5, i32);
+                        if(opcode==0x81) i16 = F16S; else i16 = F8S;
+                        ed = TO_NAT((nextop & 7) + (rex.b << 3));
+                        MOV32w(x5, i16);
                         UXTHw(x6, ed);
                         emit_adc16(dyn, ninst, x6, x5, x3, x4);
                         BFIx(ed, x6, 0, 16);
                     } else {
                         addr = geted(dyn, addr, ninst, nextop, &wback, x2, &fixedaddress, NULL, 0, 0, rex, LOCK_LOCK, 0, (opcode==0x81)?2:1);
-                        if(opcode==0x81) i32 = F16S; else i32 = F8S;
-                        MOV32w(x5, i32);
+                        if(opcode==0x81) i16 = F16S; else i16 = F8S;
+                        MOV32w(x5, i16);
                         MARKLOCK;
                         LDAXRH(x1, wback);
                         emit_adc16(dyn, ninst, x1, x5, x3, x4);
@@ -380,16 +392,16 @@ uintptr_t dynarec64_66F0(dynarec_arm_t* dyn, uintptr_t addr, uintptr_t ip, int n
                     READFLAGS(X_CF);
                     SETFLAGS(X_ALL, SF_SET_PENDING);
                     if(MODREG) {
-                        if(opcode==0x81) i32 = F16S; else i32 = F8S;
-                        ed = xRAX+(nextop&7)+(rex.b<<3);
-                        MOV32w(x5, i32);
+                        if(opcode==0x81) i16 = F16S; else i16 = F8S;
+                        ed = TO_NAT((nextop & 7) + (rex.b << 3));
+                        MOV32w(x5, i16);
                         UXTHw(x6, ed);
                         emit_sbb16(dyn, ninst, x6, x5, x3, x4);
                         BFIx(ed, x6, 0, 16);
                     } else {
                         addr = geted(dyn, addr, ninst, nextop, &wback, x2, &fixedaddress, NULL, 0, 0, rex, LOCK_LOCK, 0, (opcode==0x81)?2:1);
-                        if(opcode==0x81) i32 = F16S; else i32 = F8S;
-                        MOV32w(x5, i32);
+                        if(opcode==0x81) i16 = F16S; else i16 = F8S;
+                        MOV32w(x5, i16);
                         MARKLOCK;
                         LDAXRH(x1, wback);
                         emit_sbb16(dyn, ninst, x1, x5, x3, x4);
@@ -402,29 +414,37 @@ uintptr_t dynarec64_66F0(dynarec_arm_t* dyn, uintptr_t addr, uintptr_t ip, int n
                     if(opcode==0x81) {INST_NAME("LOCK AND Ew, Iw");} else {INST_NAME("LOCK AND Ew, Ib");}
                     SETFLAGS(X_ALL, SF_SET_PENDING);
                     if(MODREG) {
-                        if(opcode==0x81) i32 = F16S; else i32 = F8S;
-                        ed = xRAX+(nextop&7)+(rex.b<<3);
-                        MOV32w(x5, i32);
+                        if(opcode==0x81) i16 = F16S; else i16 = F8S;
+                        ed = TO_NAT((nextop & 7) + (rex.b << 3));
                         UXTHw(x6, ed);
-                        emit_and16(dyn, ninst, x6, x5, x3, x4);
+                        emit_and16c(dyn, ninst, x6, i16, x3, x4);
                         BFIx(ed, x6, 0, 16);
                     } else {
                         addr = geted(dyn, addr, ninst, nextop, &wback, x2, &fixedaddress, NULL, 0, 0, rex, LOCK_LOCK, 0, (opcode==0x81)?2:1);
-                        if(opcode==0x81) i32 = F16S; else i32 = F8S;
+                        if(opcode==0x81) i16 = F16S; else i16 = F8S;
+                        i64 = convert_bitmask_w(i16);
                         if(arm64_atomics) {
-                            MOV32w(x5, ~i32);
+                            MOV32w(x5, ~i16);
                             UFLAG_IF {
                                 LDCLRALH(x5, x1, wback);
-                                MVNw_REG(x5, x5);
-                                emit_and16(dyn, ninst, x1, x5, x3, x4);
+                                if(i64) {
+                                    emit_and16c(dyn, ninst, x1, i16, x3, x4);
+                                } else {
+                                    MVNw_REG(x5, x5);
+                                    emit_and16(dyn, ninst, x1, x5, x3, x4);
+                                }
                             } else {
                                 STCLRLH(x5, wback);
                             }
                         } else {
-                            MOV32w(x5, i32);
+                            if(!i64) {MOV32w(x5, i16);}
                             MARKLOCK;
                             LDAXRH(x1, wback);
-                            emit_and16(dyn, ninst, x1, x5, x3, x4);
+                            if(i64) {
+                                emit_and16c(dyn, ninst, x1, i16, x3, x4);
+                            } else {
+                                emit_and16(dyn, ninst, x1, x5, x3, x4);
+                            }
                             STLXRH(x3, x1, wback);
                             CBNZx_MARKLOCK(x3);
                             SMDMB();
@@ -435,16 +455,16 @@ uintptr_t dynarec64_66F0(dynarec_arm_t* dyn, uintptr_t addr, uintptr_t ip, int n
                     if(opcode==0x81) {INST_NAME("LOCK SUB Ew, Iw");} else {INST_NAME("LOCK SUB Ew, Ib");}
                     SETFLAGS(X_ALL, SF_SET_PENDING);
                     if(MODREG) {
-                        if(opcode==0x81) i32 = F16S; else i32 = F8S;
-                        ed = xRAX+(nextop&7)+(rex.b<<3);
-                        MOV32w(x5, i32);
+                        if(opcode==0x81) i16 = F16S; else i16 = F8S;
+                        ed = TO_NAT((nextop & 7) + (rex.b << 3));
+                        MOV32w(x5, i16);
                         UXTHw(x6, ed);
                         emit_sub16(dyn, ninst, x6, x5, x3, x4);
                         BFIx(ed, x6, 0, 16);
                     } else {
                         addr = geted(dyn, addr, ninst, nextop, &wback, x2, &fixedaddress, NULL, 0, 0, rex, LOCK_LOCK, 0, (opcode==0x81)?2:1);
-                        if(opcode==0x81) i32 = F16S; else i32 = F8S;
-                        MOV32w(x5, i32);
+                        if(opcode==0x81) i16 = F16S; else i16 = F8S;
+                        MOV32w(x5, i16);
                         if(!ALIGNED_ATOMICH) {
                             if(arm64_uscat) {
                                 ANDx_mask(x1, wback, 1, 0, 3);  // mask = F
@@ -459,29 +479,33 @@ uintptr_t dynarec64_66F0(dynarec_arm_t* dyn, uintptr_t addr, uintptr_t ip, int n
                             NEGw_REG(x4, x5);
                             UFLAG_IF {
                                 LDADDALH(x4, x1, wback);
-                                emit_sub16(dyn, ninst, x1, x5, x3, x4);
                             } else {
                                 STADDLH(x4, wback);
                             }
                         } else {
                             MARKLOCK;
                             LDAXRH(x1, wback);
-                            emit_sub16(dyn, ninst, x1, x5, x3, x4);
+                            SUBw_REG(x4, x1, x5);
                             STLXRH(x3, x1, wback);
                             CBNZx_MARKLOCK(x3);
                         }
                         SMDMB();
                         if(!ALIGNED_ATOMICH) {
-                            B_NEXT_nocond;
+                            B_MARK2_nocond;
                             MARK;   // unaligned! also, not enough
                             LDRH_U12(x1, wback, 0);
                             LDAXRB(x4, wback);
-                            BFIw(x1, x4, 0, 8); // re-inject
-                            emit_sub16(dyn, ninst, x1, x5, x3, x4);
-                            STLXRB(x3, x1, wback);
+                            SUBw_UXTB(x4, x4, x1);
+                            CBNZw_MARK(x4);
+                            SUBw_REG(x4, x1, x5);
+                            STLXRB(x3, x4, wback);
                             CBNZx_MARK(x3);
-                            STRH_U12(x1, wback, 0);    // put the whole value
+                            STRH_U12(x4, wback, 0);    // put the whole value
                             SMDMB();
+                        }
+                        MARK2;
+                        UFLAG_IF {
+                            emit_sub16(dyn, ninst, x1, x5, x3, x4);
                         }
                     }
                     break;
@@ -489,27 +513,30 @@ uintptr_t dynarec64_66F0(dynarec_arm_t* dyn, uintptr_t addr, uintptr_t ip, int n
                     if(opcode==0x81) {INST_NAME("LOCK XOR Ew, Iw");} else {INST_NAME("LOCK XOR Ew, Ib");}
                     SETFLAGS(X_ALL, SF_SET_PENDING);
                     if(MODREG) {
-                        if(opcode==0x81) i32 = F16S; else i32 = F8S;
-                        ed = xRAX+(nextop&7)+(rex.b<<3);
-                        MOV32w(x5, i32);
+                        if(opcode==0x81) i16 = F16S; else i16 = F8S;
+                        ed = TO_NAT((nextop & 7) + (rex.b << 3));
                         UXTHw(x6, ed);
-                        emit_xor16(dyn, ninst, x6, x5, x3, x4);
+                        emit_xor16c(dyn, ninst, x6, i16, x3, x4);
                         BFIx(ed, x6, 0, 16);
                     } else {
                         addr = geted(dyn, addr, ninst, nextop, &wback, x2, &fixedaddress, NULL, 0, 0, rex, LOCK_LOCK, 0, (opcode==0x81)?2:1);
-                        if(opcode==0x81) i32 = F16S; else i32 = F8S;
-                        MOV32w(x5, i32);
+                        if(opcode==0x81) i16 = F16S; else i16 = F8S;
+                        i64 = convert_bitmask_w(i16);
                         if(arm64_atomics) {
                             UFLAG_IF {
                                 LDEORALH(x5, x1, wback);
-                                emit_xor16(dyn, ninst, x1, x5, x3, x4);
+                                emit_xor16c(dyn, ninst, x1, i16, x3, x4);
                             } else {
                                 STEORLH(x5, wback);
                             }
                         } else {
+                            if(!i64) {MOV32w(x5, i16);}
                             MARKLOCK;
                             LDAXRH(x1, wback);
-                            emit_xor16(dyn, ninst, x1, x5, x3, x4);
+                            if(i64)
+                                emit_xor16c(dyn, ninst, x1, i16, x3, x4);
+                            else
+                                emit_xor16(dyn, ninst, x1, x5, x3, x4);
                             STLXRH(x3, x1, wback);
                             CBNZx_MARKLOCK(x3);
                             SMDMB();
@@ -522,9 +549,9 @@ uintptr_t dynarec64_66F0(dynarec_arm_t* dyn, uintptr_t addr, uintptr_t ip, int n
                     GETEW(x6, (opcode==0x81)?2:1);
                     (void)wb1;
                     // No need to LOCK, this is readonly
-                    if(opcode==0x81) i32 = F16S; else i32 = F8S;
-                    if(i32) {
-                        MOV32w(x5, i32);
+                    if(opcode==0x81) i16 = F16S; else i16 = F8S;
+                    if(i16) {
+                        MOV32w(x5, i16);
                         emit_cmp16(dyn, ninst, x6, x5, x3, x4, x6);
                     } else {
                         emit_cmp16_0(dyn, ninst, ed, x3, x4);
@@ -539,9 +566,9 @@ uintptr_t dynarec64_66F0(dynarec_arm_t* dyn, uintptr_t addr, uintptr_t ip, int n
                 {
                     case 0: // INC Ew
                         INST_NAME("LOCK INC Ew");
-                        SETFLAGS(X_ALL&~X_CF, SF_SUBSET_PENDING);
+                        SETFLAGS(X_ALL&~X_CF, SF_SUBSET);
                         if(MODREG) {
-                            ed = xRAX+(nextop&7)+(rex.b<<3);
+                            ed = TO_NAT((nextop & 7) + (rex.b << 3));
                             UXTHw(x6, ed);
                             emit_inc16(dyn, ninst, x6, x5, x3);
                             BFIx(ed, x6, 0, 16);
@@ -567,9 +594,9 @@ uintptr_t dynarec64_66F0(dynarec_arm_t* dyn, uintptr_t addr, uintptr_t ip, int n
                         break;
                     case 1: //DEC Ew
                         INST_NAME("LOCK DEC Ew");
-                        SETFLAGS(X_ALL&~X_CF, SF_SUBSET_PENDING);
+                        SETFLAGS(X_ALL&~X_CF, SF_SUBSET);
                         if(MODREG) {
-                            ed = xRAX+(nextop&7)+(rex.b<<3);
+                            ed = TO_NAT((nextop & 7) + (rex.b << 3));
                             UXTHw(x6, ed);
                             emit_dec16(dyn, ninst, x6, x5, x3);
                             BFIx(ed, x6, 0, 16);

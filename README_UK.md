@@ -2,7 +2,7 @@
 
 Емулятор простіра користувача x86_64 із родзинкою
 
-[Дивитись журнал змін](https://github.com/ptitSeb/box64/blob/main/docs/CHANGELOG.md) | [中文](https://github.com/ptitSeb/box64/blob/main/README_CN.md) | [Українська](https://github.com/ptitSeb/box64/blob/main/README_UK.md) | [Повідомити про помилку](https://github.com/ptitSeb/box64/issues/new)
+[Дивитись журнал змін](https://github.com/ptitSeb/box64/blob/main/docs/CHANGELOG.md) | [中文](https://github.com/ptitSeb/box64/blob/main/README_CN.md) | [English](https://github.com/ptitSeb/box64/blob/main/README.md) | [Повідомити про помилку](https://github.com/ptitSeb/box64/issues/new)
 
 ![build](https://app.travis-ci.com/ptitSeb/box64.svg?branch=main) ![stars](https://img.shields.io/github/stars/ptitSeb/box64) ![forks](https://img.shields.io/github/forks/ptitSeb/box64) ![contributors](https://img.shields.io/github/contributors/ptitSeb/box64) ![prs](https://img.shields.io/github/issues-pr/ptitSeb/box64) ![issues](https://img.shields.io/github/issues/ptitSeb/box64)
 
@@ -40,7 +40,6 @@ Box64 інтегрується з DynaRec (динамічний рекомпіл
 > Інструкцію з встановлення Wine для Box64 можна знайти [тут](docs/X64WINE.md).
 
 ----
-
 Історія версій/Журнал змін
 ----
 
@@ -68,7 +67,7 @@ Box64 інтегрується з DynaRec (динамічний рекомпіл
 ----
 
 Запуск ігор Unity має працювати, але ви також повинні зауважити, що для багатьох ігор Unity3D потрібен OpenGL 3+, який може бути складно забезпечити на ARM SBC (одноплатних комп’ютерах). Крім того, багато нових ігор Unity3D (наприклад, KSP) використовують стиснуті текстури BC7, які не підтримуються багатьма інтегрованими GPU ARM.
-Підказка: в Pi4 використовуйте `MESA_GL_VERSION_OVERRIDE=3.2`, а в Panfrost — `PAN_MESA_DEBUG=gl3`, щоб використовувати вищий профіль, якщо гра запускається, а потім завершується, перш ніж щось показує.
+Підказка: на Pi4 і Pi5 використовуйте `MESA_GL_VERSION_OVERRIDE=3.2` з `BOX64_DYNAREC_STRONGMEM=1`, щоб запобігти зависанням і ввімкнути режим сильної пам’яті, і використовуйте Panfrost `PAN_MESA_DEBUG=gl3`, щоб використовувати вищий профіль, якщо гра починається, а потім завершується, перш ніж щось показати.
 
 ----
 
@@ -108,7 +107,7 @@ Box64 використовує бібліотеки Vulkan, але зауваж�
 Є багато способів зробити внесок: внесок коду, фінансовий внесок, апаратне забезпечення та реклама!
 Отже, без особливого порядку, я хочу подякувати:
 * За основний внесок у код: rajdakin, mogery, ksco, xctan
-* За великий фінансовий внесок: [Playtron](https://playtron.one), FlyingFathead, stormchaser3000, dennis1248, sll00, [libre-computer-project](https://libre.computer/)
+* За великий фінансовий внесок: [Playtron](https://playtron.one), tohodakilla, FlyingFathead, stormchaser3000, dennis1248, sll00, [libre-computer-project](https://libre.computer/)
 * За апаратне забезпечення та міграцію LoongArch: [xiaoji](https://www.linuxgame.cn/), команда розробників Deepin Beijing
 * За внесок у апаратне забезпечення: [ADLINK](https://www.adlinktech.com/Products/Computer_on_Modules/COM-HPC-Server-Carrier-and-Starter-Kit/Ampere_Altra_Developer_Platform?lang=en) with [Ampere](https://amperecomputing.com/home/edge), [SOPHGO](https://www.sophon.ai/), [Radxa](https://rockpi.org/), [StarFive](https://rvspace.org/), [Pine64](https://www.pine64.org/), [AYN](https://www.ayntec.com/), [AYANEO](https://ayaneo.com/), [jiangcuo](https://github.com/jiangcuo)
 * За безперервну рекламу Box64: salva ([microLinux](https://www.youtube.com/channel/UCwFQAEj1lp3out4n7BeBatQ)), [PILab](https://www.youtube.com/channel/UCgfQjdc5RceRlTGfuthBs7g)/Команда [TwisterOS](https://twisteros.com/), [The Byteman](https://www.youtube.com/channel/UCEr8lpIJ3B5Ctc5BvcOHSnA), [NicoD](https://www.youtube.com/channel/UCpv7NFr0-9AB5xoklh3Snhg), ekianjo ([Boilingsteam](https://boilingsteam.com/))

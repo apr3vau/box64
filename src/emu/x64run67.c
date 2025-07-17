@@ -10,15 +10,15 @@
 
 #include "debug.h"
 #include "box64stack.h"
+#include "box64cpu_util.h"
 #include "x64emu.h"
-#include "x64run.h"
 #include "x64emu_private.h"
 #include "x64run_private.h"
 #include "x64primop.h"
 #include "x64trace.h"
 #include "x87emu_private.h"
 #include "box64context.h"
-#include "bridge.h"
+#include "alternate.h"
 
 #include "modrm.h"
 
@@ -162,6 +162,31 @@ uintptr_t Run67(x64emu_t *emu, rex_t rex, int rep, uintptr_t addr)
             cmp32(emu, R_EAX, F32);
         break;
 
+    case 0x50:
+    case 0x51:
+    case 0x52:
+    case 0x53:
+    case 0x55:
+    case 0x56:
+    case 0x57:                      /* PUSH Reg */
+        tmp8u = (opcode&7)+(rex.b<<3);
+        if(rex.is32bits)
+            Push32(emu, emu->regs[tmp8u].dword[0]);
+        else
+            Push64(emu, emu->regs[tmp8u].q[0]);
+        break;
+    case 0x58:
+    case 0x59:
+    case 0x5A:
+    case 0x5B:
+    case 0x5C:                      /* POP ESP */
+    case 0x5D:
+    case 0x5E:
+    case 0x5F:                      /* POP Reg */
+        tmp8u = (opcode&7)+(rex.b<<3);
+        emu->regs[tmp8u].q[0] = rex.is32bits?Pop32(emu):Pop64(emu);
+        break;
+
     case 0x63:                      /* MOVSXD Gd,Ed */
         nextop = F8;
         GETED32(0);
@@ -174,7 +199,20 @@ uintptr_t Run67(x64emu_t *emu, rex_t rex, int rep, uintptr_t addr)
             else
                 GD->sdword[0] = ED->sdword[0];  // meh?
         break;
-
+    case 0x64:                      /* FS: prefix */
+        #ifdef TEST_INTERPRETER
+        return Test6764(test, rex, rep, _FS, addr);
+        #else
+        return Run6764(emu, rex, rep, _FS, addr);
+        #endif
+        break;
+    case 0x65:                      /* GS: prefix */
+        #ifdef TEST_INTERPRETER
+        return Test6764(test, rex, rep, _GS, addr);
+        #else
+        return Run6764(emu, rex, rep, _GS, addr);
+        #endif
+        break;
     case 0x66:
         #ifdef TEST_INTERPRETER
         return Test6766(test, rex, rep, addr);
@@ -182,6 +220,8 @@ uintptr_t Run67(x64emu_t *emu, rex_t rex, int rep, uintptr_t addr)
         return Run6766(emu, rex, rep, addr);
         #endif
 
+    case 0x70 ... 0x7F:
+        return addr-1;  // skip 67 prefix and resume normal execution
     case 0x80:                      /* GRP Eb,Ib */
         nextop = F8;
         GETEB32(1);
@@ -289,6 +329,13 @@ uintptr_t Run67(x64emu_t *emu, rex_t rex, int rep, uintptr_t addr)
             GD->q[0] = (uint64_t)ED;
         else
             GD->q[0] = ((uintptr_t)ED)&0xffffffff;
+        break;
+
+    case 0xA1:                      /* MOV EAX,Od */
+        if(rex.w)
+            R_RAX = *(uint64_t*)(uintptr_t)F32;
+        else
+            R_RAX = *(uint32_t*)(uintptr_t)F32;
         break;
 
     case 0xC1:                      /* GRP2 Ed,Ib */
@@ -462,9 +509,6 @@ uintptr_t Run67(x64emu_t *emu, rex_t rex, int rep, uintptr_t addr)
                     break;
                 case 7:                 /* IDIV Ed */
                     idiv64(emu, ED->q[0]);
-                    #ifdef TEST_INTERPRETER
-                    test->notest = 1;
-                    #endif
                     break;
             }
         } else {

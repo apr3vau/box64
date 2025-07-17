@@ -17,11 +17,8 @@
 #include "librarian.h"
 #include "myalign.h"
 
-#ifdef ANDROID
-    const char* pulseName = "libpulse.so";
-#else
-    const char* pulseName = "libpulse.so.0";
-#endif
+const char* pulseName = "libpulse.so.0";
+#define ALTNAME "libpulse.so"
 
 #define LIBNAME pulse
 
@@ -1581,7 +1578,7 @@ void my_autobridge_mainloop_api(x64emu_t* emu, void* api)
 }
 
 #define PRE_INIT        \
-    if(box64_nopulse)   \
+    if(BOX64ENV(nopulse))   \
         return -1;
 
 #include "wrappedlib_init.h"

@@ -4,23 +4,23 @@
 #include <errno.h>
 #include <string.h>
 #include <math.h>
-#include <signal.h>
 #include <sys/types.h>
 #include <unistd.h>
 
+#include "os.h"
 #include "debug.h"
 #include "box64context.h"
-#include "dynarec.h"
+#include "box64cpu.h"
 #include "emu/x64emu_private.h"
 #include "tools/bridge_private.h"
-#include "x64run.h"
 #include "x64emu.h"
 #include "box64stack.h"
 #include "callback.h"
 #include "emu/x64run_private.h"
 #include "emu/x87emu_private.h"
 #include "x64trace.h"
-#include "signals.h"
+#include "mysignal.h"
+#include "emit_signals.h"
 #include "dynarec_native.h"
 #include "custommem.h"
 #include "bridge.h"
@@ -42,7 +42,7 @@ void native_print_armreg(x64emu_t* emu, uintptr_t reg, uintptr_t n)
 
 void native_f2xm1(x64emu_t* emu)
 {
-    ST0.d = exp2(ST0.d) - 1.0;
+    ST0.d = expm1(LN2 * ST0.d);
 }
 void native_fyl2x(x64emu_t* emu)
 {
@@ -50,19 +50,32 @@ void native_fyl2x(x64emu_t* emu)
 }
 void native_ftan(x64emu_t* emu)
 {
+#pragma STDC FENV_ACCESS ON
+    // seems that tan of glib doesn't follow the rounding direction mode
     ST0.d = tan(ST0.d);
     emu->sw.f.F87_C2 = 0;
 }
 void native_fpatan(x64emu_t* emu)
 {
+#pragma STDC FENV_ACCESS ON
     ST1.d = atan2(ST1.d, ST0.d);
 }
 void native_fxtract(x64emu_t* emu)
 {
-    int32_t tmp32s = (ST1.q&0x7ff0000000000000LL)>>52;
-    tmp32s -= 1023;
-    ST1.d /= exp2(tmp32s);
-    ST0.d = tmp32s;
+    int tmp32s;
+    if(isnan(ST1.d)) {
+        ST0.d = ST1.d;
+    } else if(isinf(ST1.d)) {
+        ST0.d = ST1.d;
+        ST1.d = INFINITY;
+    } else if(ST1.d==0.0) {
+        ST0.d = ST1.d;
+        ST1.d = -INFINITY;
+    } else {
+        // LD80bits doesn't have implicit "1" bit, so need to adjust for that
+        ST0.d = frexp(ST1.d, &tmp32s)*2;
+        ST1.d = tmp32s-1;
+    }
 }
 void native_fprem(x64emu_t* emu)
 {
@@ -87,10 +100,12 @@ void native_fprem(x64emu_t* emu)
 }
 void native_fyl2xp1(x64emu_t* emu)
 {
-    ST(1).d = log2(ST0.d + 1.0)*ST(1).d;
+    ST(1).d = log1p(ST0.d)*ST(1).d/LN2;
 }
 void native_fsincos(x64emu_t* emu)
 {
+#pragma STDC FENV_ACCESS ON
+    // seems that sincos of glib doesn't follow the rounding direction mode
     sincos(ST1.d, &ST1.d, &ST0.d);
     emu->sw.f.F87_C2 = 0;
 }
@@ -100,16 +115,21 @@ void native_frndint(x64emu_t* emu)
 }
 void native_fscale(x64emu_t* emu)
 {
+#pragma STDC FENV_ACCESS ON
     if(ST0.d!=0.0)
-        ST0.d *= exp2(trunc(ST1.d));
+        ST0.d = ldexp(ST0.d, trunc(ST1.d));
 }
 void native_fsin(x64emu_t* emu)
 {
+#pragma STDC FENV_ACCESS ON
+    // seems that sin of glib doesn't follow the rounding direction mode
     ST0.d = sin(ST0.d);
     emu->sw.f.F87_C2 = 0;
 }
 void native_fcos(x64emu_t* emu)
 {
+#pragma STDC FENV_ACCESS ON
+    // seems that cos of glib doesn't follow the rounding direction mode
     ST0.d = cos(ST0.d);
     emu->sw.f.F87_C2 = 0;
 }
@@ -164,37 +184,45 @@ void native_fld(x64emu_t* emu, uint8_t* ed)
 
 void native_ud(x64emu_t* emu)
 {
-    if(box64_dynarec_test)
+    if(BOX64ENV(dynarec_test))
         emu->test.test = 0;
-    emit_signal(emu, SIGILL, (void*)R_RIP, 0);
+    EmitSignal(emu, SIGILL, (void*)R_RIP, 0);
+}
+
+void native_br(x64emu_t* emu)
+{
+    if(BOX64ENV(dynarec_test))
+        emu->test.test = 0;
+    EmitSignal(emu, SIGSEGV, (void*)R_RIP, 0xb09d);
 }
 
 void native_priv(x64emu_t* emu)
 {
     emu->test.test = 0;
-    emit_signal(emu, SIGSEGV, (void*)R_RIP, 0);
+    EmitSignal(emu, SIGSEGV, (void*)R_RIP, 0xbad0);
 }
 
 void native_int(x64emu_t* emu, int num)
 {
     emu->test.test = 0;
-    emit_interruption(emu, num, (void*)R_RIP);
+    EmitInterruption(emu, num, (void*)R_RIP);
 }
-
-void native_singlestep(x64emu_t* emu)
+#ifndef _WIN32
+void native_wineint(x64emu_t* emu, int num)
 {
-    emit_signal(emu, SIGTRAP, (void*)R_RIP, 1);
+    emu->test.test = 0;
+    EmitWineInt(emu, num, (void*)R_RIP);
 }
-
+#endif
 void native_int3(x64emu_t* emu)
 {
-    emit_signal(emu, SIGTRAP, (void*)R_RIP, 128);
+    EmitSignal(emu, SIGTRAP, NULL, 3);
 }
 
 void native_div0(x64emu_t* emu)
 {
     emu->test.test = 0;
-    emit_div0(emu,  (void*)R_RIP, 0);
+    EmitDiv0(emu, (void*)R_RIP, 1);
 }
 
 void native_fsave(x64emu_t* emu, uint8_t* ed)
@@ -463,14 +491,12 @@ void native_pclmul(x64emu_t* emu, int gx, int ex, void* p, uint32_t u8)
     for (int i=0; i<64; ++i)
         if(GX->q[g]&(1LL<<i))
             result ^= (op2<<i);
-
-    GX->q[0] = result&0xffffffffffffffffLL;
-    GX->q[1] = (result>>64)&0xffffffffffffffffLL;
+    GX->u128 = result;
 }
 void native_pclmul_x(x64emu_t* emu, int gx, int vx, void* p, uint32_t u8)
 {
 
-    sse_regs_t *EX = ((uintptr_t)p<16)?((sse_regs_t*)p):&emu->xmm[(uintptr_t)p];
+    sse_regs_t *EX = ((uintptr_t)p>15)?((sse_regs_t*)p):&emu->xmm[(uintptr_t)p];
     sse_regs_t *GX = &emu->xmm[gx];
     sse_regs_t *VX = &emu->xmm[vx];
     int g = (u8&1)?1:0;
@@ -481,13 +507,13 @@ void native_pclmul_x(x64emu_t* emu, int gx, int vx, void* p, uint32_t u8)
         if(VX->q[g]&(1LL<<i))
             result ^= (op2<<i);
 
-    GX->q[0] = result&0xffffffffffffffffLL;
-    GX->q[1] = (result>>64)&0xffffffffffffffffLL;
+    GX->u128 = result;
 }
 void native_pclmul_y(x64emu_t* emu, int gy, int vy, void* p, uint32_t u8)
 {
-
-    sse_regs_t *EY = ((uintptr_t)p<16)?((sse_regs_t*)p):&emu->ymm[(uintptr_t)p];
+    //compute both low and high values
+    native_pclmul_x(emu, gy, vy, p, u8);
+    sse_regs_t *EY = ((uintptr_t)p>15)?((sse_regs_t*)(p+16)):&emu->ymm[(uintptr_t)p];
     sse_regs_t *GY = &emu->ymm[gy];
     sse_regs_t *VY = &emu->ymm[vy];
     int g = (u8&1)?1:0;
@@ -498,8 +524,7 @@ void native_pclmul_y(x64emu_t* emu, int gy, int vy, void* p, uint32_t u8)
         if(VY->q[g]&(1LL<<i))
             result ^= (op2<<i);
 
-    GY->q[0] = result&0xffffffffffffffffLL;
-    GY->q[1] = (result>>64)&0xffffffffffffffffLL;
+    GY->u128 = result;
 }
 
 void native_clflush(x64emu_t* emu, void* p)
@@ -513,7 +538,7 @@ static int flagsCacheNeedsTransform(dynarec_native_t* dyn, int ninst) {
         return 0;
     if(dyn->insts[ninst].f_exit.dfnone)  // flags are fully known, nothing we can do more
         return 0;
-    if(dyn->insts[jmp].f_entry.dfnone && !dyn->insts[ninst].f_exit.dfnone)
+    if(dyn->insts[jmp].f_entry.dfnone && !dyn->insts[ninst].f_exit.dfnone && !dyn->insts[jmp].df_notneeded)
         return 1;
     switch (dyn->insts[jmp].f_entry.pending) {
         case SF_UNKNOWN: return 0;
@@ -584,40 +609,13 @@ uintptr_t fakeed(dynarec_native_t* dyn, uintptr_t addr, int ninst, uint8_t nexto
     }
     return addr;
 }
-// return Ib on a mod/rm opcode without emiting anything
+// return Ib on a mod/rm opcode without emitting anything
 uint8_t geted_ib(dynarec_native_t* dyn, uintptr_t addr, int ninst, uint8_t nextop)
 {
     addr = fakeed(dyn, addr, ninst, nextop);
     return F8;
 }
 #undef F8
-
-int isNativeCall(dynarec_native_t* dyn, uintptr_t addr, uintptr_t* calladdress, uint16_t* retn)
-{
-    (void)dyn;
-
-#define PK(a)       *(uint8_t*)(addr+a)
-#define PK32(a)     *(int32_t*)(addr+a)
-
-    if(!addr || !getProtection(addr))
-        return 0;
-    if(PK(0)==0xff && PK(1)==0x25) {            // "absolute" jump, maybe the GOT (well, RIP relative in fact)
-        uintptr_t a1 = addr + 6 + (PK32(2));    // need to add a check to see if the address is from the GOT !
-        addr = (uintptr_t)getAlternate(*(void**)a1);
-    }
-    if(!addr || !getProtection(addr))
-        return 0;
-    onebridge_t *b = (onebridge_t*)(addr);
-    if(b->CC==0xCC && b->S=='S' && b->C=='C' && b->w!=(wrapper_t)0 && b->f!=(uintptr_t)PltResolver) {
-        // found !
-        if(retn) *retn = (b->C3==0xC2)?b->N:0;
-        if(calladdress) *calladdress = addr+1;
-        return 1;
-    }
-    return 0;
-#undef PK32
-#undef PK
-}
 
 // AVX
 void avx_mark_zero(dynarec_native_t* dyn, int ninst, int reg)
@@ -633,7 +631,7 @@ int is_avx_zero_unset(dynarec_native_t* dyn, int ninst, int reg)
 {
     if((dyn->ymm_zero>>reg)&1) {
         dyn->ymm_zero &= ~(1<<reg);
-        return 1;    
+        return 1;
     }
     return 0;
 }
@@ -645,4 +643,45 @@ void avx_mark_zero_reset(dynarec_native_t* dyn, int ninst)
 void avx_unmark_zero(dynarec_native_t* dyn, int ninst, int reg)
 {
     dyn->ymm_zero &= ~(1<<reg);
+}
+
+void propagate_nodf(dynarec_native_t* dyn, int ninst)
+{
+    while(ninst>=0) {
+        if(dyn->insts[ninst].df_notneeded)
+            return; // already flagged
+        if(dyn->insts[ninst].x64.gen_flags || dyn->insts[ninst].x64.use_flags)
+            return; // flags are use, so maybe it's needed
+        dyn->insts[ninst].df_notneeded = 1;
+        --ninst;
+    }
+}
+
+void x64disas_add_register_mapping_annotations(char* buf, const char* disas, const register_mapping_t* mappings, size_t mappings_sz)
+{
+    static char tmp[32];
+    tmp[0] = '\0';
+    int len = 0;
+    // skip the mnemonic
+    char* p = strchr(disas, ' ');
+    if (!p) {
+        sprintf(buf, "%s", disas);
+        return;
+    }
+    p++; // skip the space
+    while (*p) {
+        while (*p && !(*p >= 'a' && *p <= 'e') && *p != 's' && *p != 'r') // skip non-register characters
+            p++;
+        if (!*p) break;
+        for (int i = 0; i < mappings_sz; ++i) {
+            if (!strncmp(p, mappings[i].name, strlen(mappings[i].name))) {
+                len += sprintf(tmp + len, " %s,", mappings[i].native);
+                p += strlen(mappings[i].name) - 1;
+                break;
+            }
+        }
+        p++;
+        }
+    if (tmp[0]) tmp[strlen(tmp) - 1] = '\0';
+    sprintf(buf, "%-35s ;%s", disas, tmp);
 }

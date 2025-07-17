@@ -8,10 +8,10 @@
 #include <sys/types.h>
 #include <unistd.h>
 
+#include "os.h"
 #include "debug.h"
 #include "box64stack.h"
 #include "x64emu.h"
-#include "x64run.h"
 #include "x64emu_private.h"
 #include "x64run_private.h"
 #include "x64primop.h"
@@ -19,7 +19,7 @@
 #include "x87emu_private.h"
 #include "box64context.h"
 #include "bridge.h"
-#include "signals.h"
+#include "emit_signals.h"
 #ifdef DYNAREC
 #include "../dynarec/native_lock.h"
 #endif
@@ -98,6 +98,46 @@ uintptr_t Run670F(x64emu_t *emu, rex_t rex, int rep, uintptr_t addr)
             }
             break;
 
+        case 0x38:  /* MAP 0F38 */
+            opcode = F8;
+            switch(opcode) {
+
+                case 0xF6: 
+                    switch(rep) {
+                        case 2:
+                            /* ADOX Gd, Rd */
+                            nextop = F8;
+                            GETED32(0);
+                            GETGD;
+                            CHECK_FLAGS(emu);
+                            if(rex.w) {
+                                if (ACCESS_FLAG(F_OF)) {
+                                    tmp64u = 1 + (GD->q[0] & 0xFFFFFFFF) + (ED->q[0] & 0xFFFFFFFF);
+                                    tmp64u2 = 1 + GD->q[0] + ED->q[0];
+                                    }
+                                else {
+                                    tmp64u = (GD->q[0] & 0xFFFFFFFF) + (ED->q[0] & 0xFFFFFFFF);
+                                    tmp64u2 = GD->q[0] + ED->q[0];
+                                    }
+                                tmp64u = (tmp64u >> 32) + (GD->q[0] >> 32) + (ED->q[0] >> 32);
+                                CONDITIONAL_SET_FLAG(tmp64u & 0x100000000L, F_OF);
+                                GD->q[0] = tmp64u2;
+                            } else {
+                                if (ACCESS_FLAG(F_OF))
+                                    GD->q[0] = 1LL + GD->dword[0] + ED->dword[0];
+                                else
+                                    GD->q[0] = (uint64_t)GD->dword[0] + ED->dword[0];
+                                CONDITIONAL_SET_FLAG(GD->q[0] & 0x100000000LL, F_OF);
+                            }
+                            break;
+                        default:
+                            return 0;
+                    }
+                default:
+                    return 0;
+            }
+            break;
+
         case 0x6F:
             switch(rep) {
                 case 0: /* MOVQ Gm, Em */
@@ -125,6 +165,12 @@ uintptr_t Run670F(x64emu_t *emu, rex_t rex, int rep, uintptr_t addr)
                     GETGM;
                     EM->q = GM->q;
                     break;
+                case 2: /* MOVDQU Ex, Gx */
+                    nextop = F8;
+                    GETEX32(0);
+                    GETGX;
+                    memcpy(EX, GX, 16);
+                    break;
                 default:
                     return 0;
             }
@@ -143,7 +189,7 @@ uintptr_t Run670F(x64emu_t *emu, rex_t rex, int rep, uintptr_t addr)
                     nextop = F8;
                     FAKEED32(0);
                     #ifndef TEST_INTERPRETER
-                    emit_signal(emu, SIGILL, (void*)R_RIP, 0);
+                    EmitSignal(emu, SIGILL, (void*)R_RIP, 0);
                     #endif
                     break;
                 default:
