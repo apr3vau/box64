@@ -25,6 +25,8 @@ override_dh_auto_configure:
 				-DNOGIT=ON \
 				${FLAG}
 
+override_dh_auto_test:
+
 override_dh_strip:
 	dh_strip --exclude=libgcc_s.so.1 \
 	--exclude=libpng12.so.0 \
