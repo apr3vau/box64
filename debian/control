@@ -15,7 +15,7 @@ Vcs-Git: https://salsa.debian.org/debian/box64.git
 Rules-Requires-Root: no
 
 Package: box64
-Architecture: arm64 ppc64el riscv64
+Architecture: arm64 ppc64el riscv64 loong64
 Depends:
  libgcc-s1:amd64 | libgcc-s1-amd64-cross,
  libstdc++6:amd64 | libstdc++6-amd64-cross,

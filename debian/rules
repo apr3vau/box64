@@ -18,6 +18,8 @@ else ifeq ($(DEB_HOST_ARCH),ppc64el)
 PLATFORMS=PPC64LE
 else ifeq ($(DEB_HOST_ARCH),riscv64)
 PLATFORMS=RV64
+else ifeq ($(DEB_HOST_ARCH), loong64)
+PLATFORMS=LARCH64
 endif
 
 override_dh_auto_configure:
